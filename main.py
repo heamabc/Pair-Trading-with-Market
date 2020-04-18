@@ -13,15 +13,18 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 warnings.filterwarnings("ignore")
 
-# Parameters
+#==================================================== Parameters ==================================================================
 lookback_list = [120]
 entry_level_list = [1.5, 1.6]
 exit_level_list = [0, 0.5]
-
-
-
+capital = 10000000
+transaction_cost = 0.03
 input_directory = r'/kaggle/input/sp500fina4380/data.csv'
 output_directory = '/content'
+end_date = '12/31/2010'
+#==================================================== Parameters ==================================================================
+
+
 
 # List all tickers
 regex_pat = re.compile(r'_.*')
@@ -63,8 +66,7 @@ def data_cleaning(end_date):
 
     return open_df, close_df, volume_df
 
-end_date = '12/31/2010'
-open_df, close_df, volume_df = data_cleaning(end_date)
+
 
 def backtester(capital, transaction_cost, beta, signal, return_df):
     # Calculate weight for all stocks
@@ -224,43 +226,34 @@ def signal_from_residual(today_sscore,pvalues, entry_level, exit_level):
             signal.append(0)
     return signal, yesterday_exposure
 
+# Convert the numpy array result to Dataframe with the same index and columns
 def transform_result(df, ln_open_df, startdate, enddate):
+    #  Exclude SPY column, and slice the index to the backtesting period
     return pd.DataFrame(df, columns = Tickers[:-1], index = ln_open_df.index[ln_open_df.index.get_loc(startdate):ln_open_df.index.get_loc(enddate)+1])
 
+
 def sharpe(port_daily_return, pairs_daily_return):
-    de = DataFrame(port_daily_return)
-    dd = DataFrame(pairs_daily_return)
-    sharpe_port = np.sqrt(252) * (de.mean() / de.std())
-    sharpe_pairs = np.sqrt(252) * (dd.mean() / dd.std()) 
+    
+    sharpe_port = np.sqrt(252) * (port_daily_return.mean() / port_daily_return.std())
+    sharpe_pairs = np.sqrt(252) * (pairs_daily_return.mean() / pairs_daily_return.std()) 
+    
     return sharpe_pairs,sharpe_port
 
 def drawdown(pairs_cum_return, port_cum_return):
-    df = DataFrame(pairs_cum_return) 
-    expanding_Max = df.expanding(min_periods=1).max()
-    Daily_Drawdown = df/expanding_Max - 1.0
+    # Daily drawdown for pairs
+    expanding_Max = pairs_cum_return.expanding(min_periods=1).max()
+    Daily_Drawdown = pairs_cum_return/expanding_Max - 1.0
+    
+    # Find the maximum drawdown for every day
     Max_Daily_Drawdown = Daily_Drawdown.expanding(min_periods=1).min()
-    dd = DataFrame(port_cum_return)
-    expanding_Max_port = dd.expanding(min_periods=1).max()
-    Daily_Drawdown_port = dd/expanding_Max_port.values - 1.0
+    
+    # Daily drawdown for portfolio
+    expanding_Max_port = port_cum_return.expanding(min_periods=1).max()
+    Daily_Drawdown_port = port_cum_return/expanding_Max_port.values - 1.0
+    
+    # Find the maximum drawdown for every day
     Max_Daily_Drawdown_port = Daily_Drawdown_port.expanding(min_periods=1).min()
-    return Max_Daily_Drawdown, Max_Daily_Drawdown_port
-
-def sharpe(port_daily_return, pairs_daily_return):
-    de = DataFrame(port_daily_return)
-    dd = DataFrame(pairs_daily_return)
-    sharpe_port = np.sqrt(252) * (de.mean() / de.std())
-    sharpe_pairs = np.sqrt(252) * (dd.mean() / dd.std()) 
-    return sharpe_pairs,sharpe_port
-
-def drawdown(pairs_cum_return, port_cum_return):
-    df = DataFrame(pairs_cum_return) 
-    expanding_Max = df.expanding(min_periods=1).max()
-    Daily_Drawdown = df/expanding_Max - 1.0
-    Max_Daily_Drawdown = Daily_Drawdown.expanding(min_periods=1).min()
-    dd = DataFrame(port_cum_return)
-    expanding_Max_port = dd.expanding(min_periods=1).max()
-    Daily_Drawdown_port = dd/expanding_Max_port.values - 1.0
-    Max_Daily_Drawdown_port = Daily_Drawdown_port.expanding(min_periods=1).min()
+    
     return Max_Daily_Drawdown, Max_Daily_Drawdown_port
 
 def performance(pairs_cum_return, pairs_daily_return,port_cum_return,port_daily_return):
@@ -293,8 +286,6 @@ def performance(pairs_cum_return, pairs_daily_return,port_cum_return,port_daily_
         this = ((1 + cumu )**(365/return_period.shape[0]))-1
         annualized_return.append(this)
 
-
-
     annualized_return = DataFrame(annualized_return)
     dd = data.drop(['date'],axis = 1)
     name = dd.columns
@@ -309,15 +300,16 @@ def generate_output(directory):
     performance_df['Annualized_return'] = annualized_return
     performance_df['Annualized_volatility'] = annualized_volatility
     performance_df['Maximum_drawdown'] = max_dd
-    
-    annualized_return_port,annualized_volatility_port
-    
+
+    # Add portfolio metrics 
     Max_Daily_Drawdown['Portfolio'] = Max_Daily_Drawdown_port
     daily_return['Portfolio'] = port_daily_return
     cum_return['Portfolio'] = port_cum_return
     
+    # our parameters set
     params = (lookback, entry_level, exit_level)
     
+    # Save results to excel
     writer = pd.ExcelWriter(directory + "/" + str(params) + '.xlsx')
     
     daily_return.to_excel(writer, sheet_name = str(params) + " daily_return")
@@ -328,33 +320,37 @@ def generate_output(directory):
     performance_df.to_excel(writer, sheet_name = str(params) + " performance")
     
     writer.save()
+    
     return
+
+#==================================================== Start Backtest ==================================================================
+open_df, close_df, volume_df = data_cleaning(end_date)
+return_df = open_df.pct_change()
+ln_open_df = transform_ln_price(open_df)
 
 
 for lookback in lookback_list:
     for entry_level in entry_level_list:
         for exit_level in exit_level_list:
-            capital = 10000000
-            transaction_cost = 0.03
-
-            ln_open_df = transform_ln_price(open_df)
+            
+            # Setting variables for backtesting
             exposure = np.zeros(len(Tickers)-1)
             startdate = ln_open_df.iloc[lookback + 1].name
             enddate = ln_open_df.iloc[-1].name
-
+            
+            # Generate Signal, exposure, betas, pvalues, standard scores of our strategy
             signals, exposure, betas, pvalues, sscores = run_strategy(startdate,enddate,lookback, entry_level, exit_level)
             signal_df = transform_result(signals, ln_open_df, startdate, enddate)
             exposure_df = transform_result(exposure, ln_open_df, startdate, enddate)
             betas_df = transform_result(betas, ln_open_df, startdate, enddate)
             pvalues_df = transform_result(pvalues, ln_open_df, startdate, enddate)
             sscores_df = transform_result(sscores, ln_open_df, startdate, enddate)
-
-            return_df = open_df.pct_change()
-
-            daily_return, cum_return, pairs_daily_return, pairs_cum_return, port_daily_return, port_cum_return, port_value = backtester(capital, transaction_cost, betas_df, signal_df, return_df)
-
-            sharpe_pairs,sharpe_port = sharpe(port_daily_return, pairs_daily_return)
             
+            # Generate returns of our strategy
+            daily_return, cum_return, pairs_daily_return, pairs_cum_return, port_daily_return, port_cum_return, port_value = backtester(capital, transaction_cost, betas_df, signal_df, return_df)
+            
+            # Generate metrics for our strategy
+            sharpe_pairs,sharpe_port = sharpe(port_daily_return, pairs_daily_return)
             Max_Daily_Drawdown,Max_Daily_Drawdown_port = drawdown(pairs_cum_return, port_cum_return)
             annualized_return,annualized_volatility, annualized_return_port,annualized_volatility_port = performance(pairs_cum_return, pairs_daily_return,port_cum_return,port_daily_return)
 
