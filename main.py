@@ -1,3 +1,6 @@
+import time
+start_time = time.time()
+
 import numpy as np # linear algebra
 import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
 import re
@@ -151,7 +154,7 @@ class strategy:
         position = self.transform_np(position, open_df)
         
         # Generate SPY position
-        SPY_position = (position * -1 * betas).sum(axis=0)
+        SPY_position = (position * -1 * betas).sum(axis=1)
         position['SPY'] = SPY_position
             
         return pvalues, standardized_residuals, betas, position
@@ -162,15 +165,26 @@ class backtest:
         self.transaction_cost = transaction_cost
         
     def main(self, position, open_return_df):
+        sliced_open_return_df = open_return_df.loc[position.index]
         # signal is simply the difference of position
         signal = position.diff()
         # Since the first row of difference will be nan ( Nothing to minus), the first row should be the same as position
         signal.iloc[0] = position.iloc[0]
         # If we are long, we minus transaction cost, if we are short, we add transaction cost
         transaction_cost_df = signal * -1 * self.transaction_cost
-        return_with_tc = open_return_df.loc[transaction_cost_df.index] - transaction_cost_df
-
+        # return minus transaction cost
+        return_with_tc = sliced_open_return_df - transaction_cost_df
+        
         daily_return = return_with_tc * position
+        
+        # Special adjustment for SPY
+        # SPY return = (position return + signal return)/position return = stock return + signal return/position retur
+        # signal return = signal position * (stock return - transaction cost)
+        SPY_sign_signal = np.where(signal['SPY'] == 0, 0,
+                          np.where(signal['SPY'] > 0, 1, -1))
+        signal_return = signal['SPY'] * (sliced_open_return_df['SPY'] + (SPY_sign_signal * -1 ) * transaction_cost)
+        daily_return['SPY'] = sliced_open_return_df['SPY'] + (signal_return)/position['SPY']
+        
         culmulative_return = (transaction_cost_df + 1).cumprod()
         
         return daily_return, culmulative_return
@@ -199,3 +213,6 @@ pvalues, standardized_residual, betas, position = cointegration_strategy.main(ln
 
 cointegration_backtest = backtest(transaction_cost)
 daily_return, culmulative_return = cointegration_backtest.main(position, open_return_df)
+
+
+print("--- %s seconds ---" % (time.time() - start_time))
