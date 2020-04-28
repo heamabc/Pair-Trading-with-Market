@@ -69,12 +69,17 @@ class data_generation:
         close_df = close_df * splitFactor_df + divCash_df * splitFactor_df
         volume_df = volume_df * splitFactor_df
         
-        ln_open_df = self.transform_ln_price(open_df)
+        open_return_df = open_df.pct_change()
+        close_return_df = close_df.pct_change()
+        
+        ln_open_np = self.transform_ln_price(open_df)
+        ln_open_np = ln_open_np.values
 
-        return ln_open_df.values, open_df, close_df, volume_df, Tickers
+        return ln_open_np, open_df, close_df, volume_df, open_return_df, close_return_df, Tickers
         
         
 class strategy:
+    
     def __init__(self, lookback, entry_level, exit_level, p_value):
         self.lookback = lookback
         self.entry_level = entry_level
@@ -105,36 +110,51 @@ class strategy:
     
     def position_generator(self, tdy_pvalues, tdy_betas, tdy_standardized_residuals, ytd_position):
         tdy_position = np.where((tdy_pvalues > self.p_value), 0,
-                        np.where((ytd_position == 0 ) & (abs(tdy_standardized_residuals) > self.entry_level), np.sign(tdy_standardized_residuals),
-                        np.where((ytd_position == 1) & (tdy_standardized_residuals<self.exit_level), 0,
-                        np.where((ytd_position == -1) & (tdy_standardized_residuals>self.exit_level), 0,
+                        np.where((ytd_position == 0 ) & (abs(tdy_standardized_residuals) > self.entry_level), -np.sign(tdy_standardized_residuals),
+                        np.where((ytd_position == 1) & (tdy_standardized_residuals>self.exit_level), 0,
+                        np.where((ytd_position == -1) & (tdy_standardized_residuals<self.exit_level), 0,
                                 ytd_position))))
-
+        
         return tdy_position
     
-    def main(self, ln_open_np):
+    def transform_np(self, data, open_df):
+        return pd.DataFrame(data[1:], index=open_df.index[self.lookback:], columns=open_df.columns[:-1])
+    
+    def main(self, ln_open_np, open_df):
         
-        pvalues = np.ones((1,ln_open_df.shape[1]-1))
-        standardized_residuals = np.ones((1,ln_open_df.shape[1]-1))
-        betas = np.ones((1,ln_open_df.shape[1]-1))
-        position = np.zeros((1,ln_open_df.shape[1]-1))
+        # Initialize empty array
+        pvalues = np.ones((1,ln_open_np.shape[1]-1))
+        standardized_residuals = np.ones((1,ln_open_np.shape[1]-1))
+        betas = np.ones((1,ln_open_np.shape[1]-1))
+        position = np.zeros((1,ln_open_np.shape[1]-1))
         
-        
+        # For each day, slice back 60 days
         for i in tqdm(range(len(ln_open_np)-self.lookback)):
             sliced_data_np = ln_open_np[i:self.lookback+i]
+            
+            # Compute everyday pval, betas, residuals
             tdy_pvalues, tdy_betas, tdy_standardized_residuals = self.coint_and_resid(sliced_data_np[:,:-1], sliced_data_np[:,-1])
             
+            # Compute everyday position
             ytd_position = position[-1]
             tdy_position = self.position_generator(tdy_pvalues, tdy_betas, tdy_standardized_residuals, ytd_position)
-            
-            
             
             # Stack the data to numpy
             pvalues = np.vstack((pvalues, tdy_pvalues))
             standardized_residuals = np.vstack((standardized_residuals, tdy_standardized_residuals))
             betas = np.vstack((betas, tdy_betas))
-            position = np.vstack((tdy_position, position))
-
+            position = np.vstack((position, tdy_position))
+            
+        # Convert numpy to pandas
+        pvalues = self.transform_np(pvalues, open_df)
+        standardized_residuals = self.transform_np(standardized_residuals, open_df)
+        betas = self.transform_np(betas, open_df)
+        position = self.transform_np(position, open_df)
+        
+        # Generate SPY position
+        SPY_position = (position * -1 * betas).sum(axis=0)
+        position['SPY'] = SPY_position
+            
         return pvalues, standardized_residuals, betas, position
         
         
@@ -142,7 +162,7 @@ input_directory = r"/kaggle/input/sp500fina4380/data.csv"
 
 start_date = '1/3/2005'
 #end_date = '12/31/2010'
-end_date = '12/29/2005'
+end_date = '4/5/2005'
 
 lookback = 60
 entry_level = 2.0
@@ -150,10 +170,7 @@ exit_level = 0.0
 p_value = 0.05
 
 generate_data = data_generation(input_directory, start_date, end_date)
-ln_open_np, open_df, close_df, volume_df, Tickers = generate_data.output_data()
+ln_open_np, open_df, close_df, volume_df, open_return_df, close_return_df, Tickers = generate_data.output_data()
 
 cointegration_strategy = strategy(lookback, entry_level, exit_level, p_value)
-pvalues, standardized_residual, betas, position = cointegration_strategy.main(ln_open_np)
-
-
-
+pvalues, standardized_residual, betas, position = cointegration_strategy.main(ln_open_np, open_df)
