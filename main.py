@@ -2,7 +2,6 @@ import numpy as np # linear algebra
 import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
 import re
 from statsmodels.tsa.stattools import adfuller
-from statsmodels.tsa.stattools import coint
 import statsmodels.api as sm
 from tqdm import tqdm
 import warnings
@@ -157,7 +156,27 @@ class strategy:
             
         return pvalues, standardized_residuals, betas, position
         
+class backtest:
+    
+    def __init__(self, transaction_cost):
+        self.transaction_cost = transaction_cost
         
+    def main(self, position, open_return_df):
+        # signal is simply the difference of position
+        signal = position.diff()
+        # Since the first row of difference will be nan ( Nothing to minus), the first row should be the same as position
+        signal.iloc[0] = position.iloc[0]
+        # If we are long, we minus transaction cost, if we are short, we add transaction cost
+        transaction_cost_df = signal * -1 * self.transaction_cost
+        return_with_tc = open_return_df.loc[transaction_cost_df.index] - transaction_cost_df
+
+        daily_return = return_with_tc * position
+        culmulative_return = (transaction_cost_df + 1).cumprod()
+        
+        return daily_return, culmulative_return
+
+        
+# ===================================================== Parameters ====================================================
 input_directory = r"/kaggle/input/sp500fina4380/data.csv"
 
 start_date = '1/3/2005'
@@ -169,8 +188,14 @@ entry_level = 2.0
 exit_level = 0.0
 p_value = 0.05
 
+transaction_cost = 0.001
+
+# ===================================================== Main ====================================================
 generate_data = data_generation(input_directory, start_date, end_date)
 ln_open_np, open_df, close_df, volume_df, open_return_df, close_return_df, Tickers = generate_data.output_data()
 
 cointegration_strategy = strategy(lookback, entry_level, exit_level, p_value)
 pvalues, standardized_residual, betas, position = cointegration_strategy.main(ln_open_np, open_df)
+
+cointegration_backtest = backtest(transaction_cost)
+daily_return, culmulative_return = cointegration_backtest.main(position, open_return_df)
