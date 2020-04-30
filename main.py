@@ -1,14 +1,27 @@
-import time
-start_time = time.time()
-
-import numpy as np # linear algebra
-import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
+import numpy as np 
+import pandas as pd 
 import re
 from statsmodels.tsa.stattools import adfuller
 import statsmodels.api as sm
 from tqdm import tqdm
 import warnings
 warnings.filterwarnings("ignore")
+
+# ===================================================== Parameters ====================================================
+input_directory = r"/content/drive/My Drive/FINA 4380/data.csv"
+
+
+start_date = '1/3/2005'
+end_date='6/30/2005'
+#end_date = '12/31/2010'
+
+lookback = 60
+entry_level = 2.0
+exit_level = 0.0
+p_value = 0.05
+
+transaction_cost = 0.001
+
 
 
 class data_generation:
@@ -19,25 +32,26 @@ class data_generation:
         self.end_date = end_date
         
     def transform_ln_price(self, open_df):
-        open_df_transpose = open_df.T
 
-        def price_0_func(x):
-            if (open_df_transpose.values[0] is None) or (x.values[0] is None):
-                return None
-            else:
-                return open_df_transpose.loc[x.name, x.values[0]]
+        # If the first valid index is none, return first element, else return none
+        def first_valid_index(series):
+          first_index = series.first_valid_index()
+          if first_index != None:
+            return series.loc[first_index]
+          else:
+            return None
 
-        open_orignal_df = pd.DataFrame(open_df_transpose.apply(lambda x: x.first_valid_index(), axis=1)).apply(price_0_func,axis=1)
+        ln_open_df = np.log(open_df/open_df.apply(first_valid_index))
+        ln_open_np = ln_open_df.values
 
-        ln_open_df = np.log(open_df/open_orignal_df)
-        return ln_open_df
+        return ln_open_np
         
     def output_data(self):
         
         # Read data and slicing
-        data = pd.read_csv(self.input_directory, index_col='date')
+        data = pd.read_csv(self.input_directory, index_col=0)
         data = data.loc[self.start_date:self.end_date]
-
+        
         # Tickers
         regex_pat = re.compile(r'_.*')
         Tickers = data.columns.str.replace(regex_pat, '').unique()
@@ -70,15 +84,14 @@ class data_generation:
         open_df = open_df * splitFactor_df + divCash_df * splitFactor_df
         close_df = close_df * splitFactor_df + divCash_df * splitFactor_df
         volume_df = volume_df * splitFactor_df
-        
+
+        # Return
         open_return_df = open_df.pct_change()
         close_return_df = close_df.pct_change()
-        
+
         ln_open_np = self.transform_ln_price(open_df)
-        ln_open_np = ln_open_np.values
 
         return ln_open_np, open_df, close_df, volume_df, open_return_df, close_return_df, Tickers
-        
         
 class strategy:
     
@@ -165,13 +178,16 @@ class backtest:
         self.transaction_cost = transaction_cost
         
     def main(self, position, open_return_df):
+
         sliced_open_return_df = open_return_df.loc[position.index]
-        # signal is simply the difference of position
+
+        # signal is simply the difference of position and some adjustments
         signal = position.diff()
-        # Since the first row of difference will be nan ( Nothing to minus), the first row should be the same as position
         signal.iloc[0] = position.iloc[0]
+
         # If we are long, we minus transaction cost, if we are short, we add transaction cost
         transaction_cost_df = signal * -1 * self.transaction_cost
+        
         # return minus transaction cost
         return_with_tc = sliced_open_return_df - transaction_cost_df
         
@@ -189,21 +205,6 @@ class backtest:
         
         return daily_return, culmulative_return
 
-        
-# ===================================================== Parameters ====================================================
-input_directory = r"/kaggle/input/sp500fina4380/data.csv"
-
-start_date = '1/3/2005'
-#end_date = '12/31/2010'
-end_date = '4/5/2005'
-
-lookback = 60
-entry_level = 2.0
-exit_level = 0.0
-p_value = 0.05
-
-transaction_cost = 0.001
-
 # ===================================================== Main ====================================================
 generate_data = data_generation(input_directory, start_date, end_date)
 ln_open_np, open_df, close_df, volume_df, open_return_df, close_return_df, Tickers = generate_data.output_data()
@@ -214,5 +215,9 @@ pvalues, standardized_residual, betas, position = cointegration_strategy.main(ln
 cointegration_backtest = backtest(transaction_cost)
 daily_return, culmulative_return = cointegration_backtest.main(position, open_return_df)
 
+writer = pd.ExcelWriter(r'/content/drive/My Drive/Statistical Arbitrage/result.xlsx')
 
-print("--- %s seconds ---" % (time.time() - start_time))
+daily_return.to_excel(writer, 'daily_return')
+culmulative_return.to_excel(writer, 'culmulative_return')
+
+writer.save()
