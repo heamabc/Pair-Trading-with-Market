@@ -22,8 +22,6 @@ p_value = 0.05
 
 transaction_cost = 0.001
 
-
-
 class data_generation:
     
     def __init__(self, input_directory, start_date, end_date):
@@ -134,6 +132,13 @@ class strategy:
     
     def transform_np(self, data, open_df):
         return pd.DataFrame(data[1:], index=open_df.index[self.lookback:], columns=open_df.columns[:-1])
+
+    def generate_equal_weight(self, n):
+        number_of_stocks = betas.shape[1]
+        weight = [1/(2*number_of_stocks)] * (number_of_stocks)
+        weight.append(1/2)
+
+        return weight
     
     def main(self, ln_open_np, open_df):
         
@@ -141,6 +146,7 @@ class strategy:
         pvalues = np.ones((1,ln_open_np.shape[1]-1))
         standardized_residuals = np.ones((1,ln_open_np.shape[1]-1))
         betas = np.ones((1,ln_open_np.shape[1]-1))
+        beta_position = np.zeros((1,ln_open_np.shape[1]-1))
         position = np.zeros((1,ln_open_np.shape[1]-1))
         
         # For each day, slice back 60 days
@@ -153,31 +159,40 @@ class strategy:
             # Compute everyday position
             ytd_position = position[-1]
             tdy_position = self.position_generator(tdy_pvalues, tdy_betas, tdy_standardized_residuals, ytd_position)
+
+            ytd_beta_position = beta_position[-1]
+            tdy_beta_position = np.where((ytd_position == tdy_position), ytd_beta_position, 
+                                        np.where((ytd_position == 0) & (tdy_position !=0), tdy_position * -1 * tdy_betas,
+                                        0))
             
             # Stack the data to numpy
             pvalues = np.vstack((pvalues, tdy_pvalues))
             standardized_residuals = np.vstack((standardized_residuals, tdy_standardized_residuals))
             betas = np.vstack((betas, tdy_betas))
             position = np.vstack((position, tdy_position))
+            beta_position = np.vstack((beta_position, tdy_beta_position))
             
         # Convert numpy to pandas
         pvalues = self.transform_np(pvalues, open_df)
         standardized_residuals = self.transform_np(standardized_residuals, open_df)
         betas = self.transform_np(betas, open_df)
         position = self.transform_np(position, open_df)
+        beta_position = self.transform_np(beta_position, open_df)
         
         # Generate SPY position
-        SPY_position = (position * -1 * betas).sum(axis=1)
+        SPY_position = beta_position.sum(axis=1)
         position['SPY'] = SPY_position
+
+        weight = self.generate_equal_weight(betas.shape[1])
             
-        return pvalues, standardized_residuals, betas, position
+        return pvalues, standardized_residuals, betas, position, beta_position, weight
         
 class backtest:
     
     def __init__(self, transaction_cost):
         self.transaction_cost = transaction_cost
         
-    def main(self, position, open_return_df):
+    def main(self, position, open_return_df, weight):
 
         sliced_open_return_df = open_return_df.loc[position.index]
 
@@ -186,7 +201,7 @@ class backtest:
         signal.iloc[0] = position.iloc[0]
 
         # If we are long, we minus transaction cost, if we are short, we add transaction cost
-        transaction_cost_df = signal * -1 * self.transaction_cost
+        transaction_cost_df = -signal * -1 * self.transaction_cost
         
         # return minus transaction cost
         return_with_tc = sliced_open_return_df - transaction_cost_df
@@ -194,30 +209,42 @@ class backtest:
         daily_return = return_with_tc * position
         
         # Special adjustment for SPY
-        # SPY return = (position return + signal return)/position return = stock return + signal return/position retur
-        # signal return = signal position * (stock return - transaction cost)
+        # SPY return = original position return + signal return
+        # signal return = signal position * (transaction cost)
         SPY_sign_signal = np.where(signal['SPY'] == 0, 0,
                           np.where(signal['SPY'] > 0, 1, -1))
-        signal_return = signal['SPY'] * (sliced_open_return_df['SPY'] + (SPY_sign_signal * -1 ) * transaction_cost)
-        daily_return['SPY'] = sliced_open_return_df['SPY'] + (signal_return)/position['SPY']
+        signal_return = signal['SPY'] * ( -SPY_sign_signal * transaction_cost)
+        daily_return['SPY'] = sliced_open_return_df['SPY'] + signal_return
         
         culmulative_return = (transaction_cost_df + 1).cumprod()
+
+        # Portfolio return
+        port_daily_return = (daily_return * weight).sum(axis=1)
+        port_culmulative_return = (port_daily_return + 1).cumprod()
+
+        # Max Drawdown
+        daily_culmulative_max = port_culmulative_return.expanding().max()
+        daily_culmulative_min = port_culmulative_return.expanding().min()
+        maximum_drawdown = daily_culmulative_min/daily_culmulative_max-1
         
-        return daily_return, culmulative_return
+        return daily_return, culmulative_return, port_daily_return, port_culmulative_return, maximum_drawdown
 
 # ===================================================== Main ====================================================
 generate_data = data_generation(input_directory, start_date, end_date)
 ln_open_np, open_df, close_df, volume_df, open_return_df, close_return_df, Tickers = generate_data.output_data()
 
 cointegration_strategy = strategy(lookback, entry_level, exit_level, p_value)
-pvalues, standardized_residual, betas, position = cointegration_strategy.main(ln_open_np, open_df)
+pvalues, standardized_residuals, betas, position, beta_position, weight = cointegration_strategy.main(ln_open_np, open_df)
 
 cointegration_backtest = backtest(transaction_cost)
-daily_return, culmulative_return = cointegration_backtest.main(position, open_return_df)
+daily_return, culmulative_return, port_daily_return, port_culmulative_return, maximum_drawdown = cointegration_backtest.main(position, open_return_df, weight)
 
 writer = pd.ExcelWriter(r'/content/drive/My Drive/Statistical Arbitrage/result.xlsx')
 
 daily_return.to_excel(writer, 'daily_return')
 culmulative_return.to_excel(writer, 'culmulative_return')
+port_daily_return.to_excel(writer, 'port_daily_return')
+port_culmulative_return.to_excel(writer, 'port_culmulative_return')
+maximum_drawdown.to_excel(writer, 'max_drawdown')
 
 writer.save()
